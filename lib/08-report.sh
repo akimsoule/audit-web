@@ -162,6 +162,11 @@ json_write_report() {
     local total_alerts=$(( ${#JSON_EXPOSED_FILES[@]} + ${#JSON_OPEN_PORTS[@]} + ${#API_AUTH_BYPASS[@]} + ${#API_IDOR_FINDINGS[@]} + ${#API_FREE_NUCLEI_FINDINGS[@]} + ${#API_FREE_ZAP_FINDINGS[@]} ))
     local total_warnings=$(( ${#JSON_PROTECTED_FILES[@]} + ${#JSON_MISSING_HEADERS[@]} + ${#JSON_DISCLOSURES[@]} + ${#API_DISCLOSURES[@]} + ${#API_CORS_ISSUES[@]} + ${#API_JWT_ISSUES[@]} + ${#API_MASS_ASSIGNMENT[@]} + ${#API_FREE_ARJUN_FINDINGS[@]} + ${#API_FREE_KITERUNNER_FINDINGS[@]} + ${#AUTH_FINDINGS[@]} ))
 
+    local score_info score grade
+    score_info=$(calculer_score_securite)
+    score="${score_info%%|*}"
+    grade="${score_info#*|}"
+
     cat > "${json_file}" <<- JSONEOF
 {
   "tool": "audit_web.sh v1.0",
@@ -226,12 +231,87 @@ ${auth_findings_json}
   },
   "summary": {
     "alerts": ${total_alerts},
-    "warnings": ${total_warnings}
+    "warnings": ${total_warnings},
+    "score": ${score},
+    "grade": "${grade}"
   }
 }
 JSONEOF
 
     log_info "Rapport JSON généré → ${json_file}"
+}
+
+# =============================================================================
+# SCORE DE SÉCURITÉ
+# =============================================================================
+
+calculer_score_securite() {
+    local score=100
+
+    # Fichiers sensibles exposés
+    score=$(( score - (${#JSON_EXPOSED_FILES[@]} * 15) ))
+
+    # Auth bypass
+    score=$(( score - (${#API_AUTH_BYPASS[@]} * 20) ))
+
+    # IDOR
+    score=$(( score - (${#API_IDOR_FINDINGS[@]} * 15) ))
+
+    # Ports sensibles ouverts
+    score=$(( score - (${#JSON_OPEN_PORTS[@]} * 10) ))
+
+    # Nuclei : critical/high/medium
+    for n in "${API_FREE_NUCLEI_FINDINGS[@]+"${API_FREE_NUCLEI_FINDINGS[@]}"}"; do
+        if echo "$n" | grep -qi '"severity":"critical"'; then
+            score=$(( score - 20 ))
+        elif echo "$n" | grep -qi '"severity":"high"'; then
+            score=$(( score - 10 ))
+        elif echo "$n" | grep -qi '"severity":"medium"'; then
+            score=$(( score - 5 ))
+        fi
+    done
+
+    # ZAP : High/Critical
+    for z in "${API_FREE_ZAP_FINDINGS[@]+"${API_FREE_ZAP_FINDINGS[@]}"}"; do
+        if echo "$z" | grep -qi '"risk":"(High|Critical)"'; then
+            score=$(( score - 10 ))
+        fi
+    done
+
+    # CORS
+    score=$(( score - (${#API_CORS_ISSUES[@]} * 5) ))
+
+    # JWT
+    score=$(( score - (${#API_JWT_ISSUES[@]} * 5) ))
+
+    # Mass assignment
+    score=$(( score - (${#API_MASS_ASSIGNMENT[@]} * 10) ))
+
+    # Auth findings
+    score=$(( score - (${#AUTH_FINDINGS[@]} * 5) ))
+
+    # Headers manquants / disclosures
+    score=$(( score - (${#JSON_MISSING_HEADERS[@]} * 3) ))
+    score=$(( score - (${#JSON_DISCLOSURES[@]} * 3) ))
+    score=$(( score - (${#API_DISCLOSURES[@]} * 3) ))
+
+    # Rate limiting
+    score=$(( score - (${#API_RATE_LIMIT_ISSUES[@]} * 5) ))
+
+    # Arjun / Kiterunner
+    score=$(( score - (${#API_FREE_ARJUN_FINDINGS[@]} * 2) ))
+    score=$(( score - (${#API_FREE_KITERUNNER_FINDINGS[@]} * 2) ))
+
+    [[ $score -lt 0 ]] && score=0
+
+    local grade="F"
+    if [[ $score -ge 90 ]]; then grade="A"
+    elif [[ $score -ge 80 ]]; then grade="B"
+    elif [[ $score -ge 70 ]]; then grade="C"
+    elif [[ $score -ge 50 ]]; then grade="D"
+    fi
+
+    echo "${score}|${grade}"
 }
 
 # =============================================================================
@@ -244,6 +324,14 @@ generer_rapport_final() {
     echo -e "  Hôte réseau      : ${BOLD}${TARGET_HOST}${RESET}"
     echo -e "  Date / Heure     : ${BOLD}$(date '+%Y-%m-%d %H:%M:%S %Z')${RESET}"
     echo -e "  Conteneur Docker : ${BOLD}${CONTAINER_NAME}${RESET}"
+
+    local score_info
+    score_info=$(calculer_score_securite)
+    local score="${score_info%%|*}"
+    local grade="${score_info#*|}"
+    echo ""
+    echo -e "  ${BOLD}SCORE DE SÉCURITÉ : ${score}/100 — Grade ${grade}${RESET}"
+
     echo ""
     echo -e "  ${YELLOW}RAPPEL :${RESET} Ce rapport est à usage interne confidentiel uniquement."
     echo -e "  Les vulnérabilités identifiées doivent être traitées selon votre"
@@ -252,6 +340,10 @@ generer_rapport_final() {
     log_info "Audit terminé. Aucune exploitation n'a été effectuée sur la cible."
 
     {
+        echo ""
+        echo "============================================================"
+        echo "  SCORE DE SÉCURITÉ : ${score}/100 — Grade ${grade}"
+        echo "============================================================"
         echo ""
         echo "============================================================"
         echo "  FIN DU RAPPORT"
