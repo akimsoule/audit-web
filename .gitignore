@@ -1,0 +1,5 @@
+audit_reports/
+*.txt
+*.conf
+.DS_Store
+scan.md
